@@ -1657,7 +1657,8 @@ mapContainer.addEventListener('drop', e => {
   if (photoFiles.length) handleFiles(photoFiles);
 });
 
-function loadKmlFile(file) {
+function loadKmlFile(file, options = {}) {
+  const dotColor = options.color || '#e8ff4d';
   const id = 'kml_' + (++kmlIdCounter);
   const shortName = file.name.length > 24 ? file.name.slice(0, 22) + '…' : file.name;
 
@@ -1684,15 +1685,15 @@ function loadKmlFile(file) {
       // Parse KML using DOMParser + leaflet-omnivore
       const customLayer = L.geoJSON(null, {
         style: {
-          color: '#e8ff4d',
+          color: dotColor,
           weight: 1.5,
           opacity: 0.75,
-          fillColor: '#e8ff4d',
+          fillColor: dotColor,
           fillOpacity: 0.3
         },
         pointToLayer: (feature, latlng) => L.circleMarker(latlng, {
           radius: 5,
-          fillColor: '#e8ff4d',
+          fillColor: dotColor,
           color: '#000',
           weight: 1,
           opacity: 1,
@@ -2937,7 +2938,7 @@ window.toggleMeasure = function() {
       try {
         const blob = new Blob([EMBEDDED_KML], { type: 'application/vnd.google-earth.kml+xml' });
         const file = new File([blob], EMBEDDED_KML_NAME);
-        loadKmlFile(file);
+        loadKmlFile(file, { color: '#ff6b35' }); // distinct color for the embedded dataset
       } catch(e) {
         console.error('Embedded KML load error:', e);
       }
