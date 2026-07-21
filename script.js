@@ -1657,8 +1657,74 @@ mapContainer.addEventListener('drop', e => {
   if (photoFiles.length) handleFiles(photoFiles);
 });
 
+// ─── DNIT ROUTE LOOKUP (LD_INICIO / LD_INICIO_OAE points) ─────────────────────
+let _dnitRowSeq = 0;
+
+function getTodayDnitDateParam() {
+  const d = new Date();
+  return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`; // matches DNIT's non-padded format, e.g. 2026-7-20
+}
+
+// DNIT's localizarkm endpoint responds with an array like:
+// [{ id, br, sg_tp_trecho, uf, versao, id_trecho, km: "259.34227822364312", lat, lng }]
+function extractDnitKm(data) {
+  const rec = Array.isArray(data) ? data[0] : data;
+  if (!rec || typeof rec !== 'object') return null;
+  const raw = rec.km ?? rec.Km ?? rec.KM;
+  if (raw == null || raw === '') return null;
+  const num = parseFloat(raw);
+  return Number.isFinite(num) ? num.toFixed(2) : raw;
+}
+
+// Replace the "consultando…" placeholder in a marker's popup with the real value.
+function updateDnitPopupRow(layer, text) {
+  if (!layer || !layer._dnitRowId || !layer.getPopup) return;
+  const popup = layer.getPopup();
+  if (!popup) return;
+  const html = popup.getContent();
+  const re = new RegExp(`(id="${layer._dnitRowId}"[^>]*>\\s*DNIT km <span>)[^<]*(</span>)`);
+  const updated = html.replace(re, `$1${text}$2`);
+  layer.setPopupContent(updated);
+}
+
+async function lookupDnitKm(lat, lng, label, layer) {
+  const dateStr = getTodayDnitDateParam();
+  const url = `https://servicos.dnit.gov.br/sgplan/apigeo/rotas/localizarkm?lng=${lng}&lat=${lat}&r=250&data=${dateStr}`;
+  try {
+    const res = await fetch(url);
+    let data = null;
+    try { data = await res.json(); } catch (_) { data = await res.text().catch(() => null); }
+    console.log(`[DNIT localizarkm] ${label} (${lat}, ${lng}):`, data);
+
+    const km = extractDnitKm(data);
+    const text = km != null ? km : (data ? JSON.stringify(data).slice(0, 80) : '—');
+    updateDnitPopupRow(layer, text);
+    return data;
+  } catch (err) {
+    console.error('DNIT localizarkm lookup failed:', err);
+    updateDnitPopupRow(layer, 'erro na consulta');
+    return null;
+  }
+}
+
+function runDnitLookupForLayer(parsedLayer) {
+  const matches = [];
+  Object.values(parsedLayer._layers || {}).forEach(l => {
+    const sublayers = l._layers ? Object.values(l._layers) : [l];
+    sublayers.forEach(sl => {
+      const props = sl.feature?.properties || sl.options?.properties || {};
+      const name  = (props.name || '').toUpperCase();
+      const latlng = sl.getLatLng?.() || sl.getBounds?.()?.getCenter?.();
+      if (latlng && sl._dnitRowId) { // rows are only tagged on LD_INICIO / LD_INICIO_OAE points
+        matches.push({ name: props.name || name, latlng, layer: sl });
+      }
+    });
+  });
+  matches.forEach(m => lookupDnitKm(m.latlng.lat, m.latlng.lng, m.name, m.layer));
+}
+
 function loadKmlFile(file, options = {}) {
-  const dotColor = options.color || '#0000ff';
+  const dotColor = options.color || '#e8ff4d';
   const id = 'kml_' + (++kmlIdCounter);
   const shortName = file.name.length > 24 ? file.name.slice(0, 22) + '…' : file.name;
 
@@ -1712,12 +1778,22 @@ function loadKmlFile(file, options = {}) {
             .map(([k, v]) => `<div class="popup-row">${k} <span>${v}</span></div>`)
             .join('');
 
+          // LD_INICIO / LD_INICIO_OAE points get an extra row that's filled in
+          // once the DNIT km lookup for this point resolves.
+          const isLdInicio = String(name).toUpperCase().includes('LD_INICIO');
+          let dnitRow = '';
+          if (isLdInicio) {
+            layer._dnitRowId = 'dnitkm-' + (++_dnitRowSeq);
+            dnitRow = `<div class="popup-row dnit-km-row" id="${layer._dnitRowId}">DNIT km <span>consultando…</span></div>`;
+          }
+
           layer.bindPopup(`
             <div class="popup-content">
               <div class="popup-name">${name}${uf ? ' · ' + uf : ''}</div>
               ${oae}
               ${km ? `<div class="popup-row">Extensão <span>${km}</span></div>` : ''}
               ${rows}
+              ${dnitRow}
             </div>
           `, { maxHeight: 280 });
         }
@@ -1742,6 +1818,10 @@ function loadKmlFile(file, options = {}) {
         kmlLayers[id] = { layer: parsed, name: file.name };
         addKmlLayerEntry(id, file.name, featureCount);
         showToast(`KML carregado — <span class="accent">${featureCount.toLocaleString()} feições</span>`);
+
+        if (!options.skipDnitLookup) {
+          runDnitLookupForLayer(parsed);
+        }
       }, 400);
 
     } catch (err) {
@@ -2938,7 +3018,7 @@ window.toggleMeasure = function() {
       try {
         const blob = new Blob([EMBEDDED_KML], { type: 'application/vnd.google-earth.kml+xml' });
         const file = new File([blob], EMBEDDED_KML_NAME);
-        loadKmlFile(file, { color: '#e8ff4d' }); // distinct color for the embedded dataset
+        loadKmlFile(file, { color: '#ff6b35', skipDnitLookup: true }); // distinct color, no DNIT lookup for the embedded dataset
       } catch(e) {
         console.error('Embedded KML load error:', e);
       }
